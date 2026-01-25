@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Stereographic Projection (Sphere tangent to plane)</title>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #wrap { position: relative; width: 100%; height: 100%; }
+    #hud {
+      position: absolute; right: 12px; top: 12px; width: 360px; max-width: calc(100% - 24px);
+      background: rgba(20,20,24,0.88); color: #fff; border-radius: 14px; padding: 12px 12px 10px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35); backdrop-filter: blur(6px);
+      font-size: 13px; line-height: 1.25;
+    }
+    #hud h1 { font-size: 14px; margin: 0 0 8px; font-weight: 700; letter-spacing: 0.2px; }
+    #hud .row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: center; margin: 8px 0; }
+    #hud input[type="range"] { width: 100%; }
+    #hud .btns { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    #hud button {
+      border: 0; border-radius: 10px; padding: 8px 10px; cursor: pointer;
+      background: rgba(255,255,255,0.14); color: #fff;
+    }
+    #hud button:hover { background: rgba(255,255,255,0.22); }
+    #hud button[aria-pressed="true"] { background: rgba(255,255,255,0.28); }
+    #hud code { background: rgba(255,255,255,0.10); padding: 2px 6px; border-radius: 8px; }
+    #hud .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.14); margin-right: 6px; }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+
+<body>
+<div id="wrap">
+  <div id="hud">
+    <h1>Stereographic projection (sphere tangent to plane)</h1>
+
+    <div style="opacity:0.9">
+      Sphere radius <span class="pill mono">1</span> centered at <span class="pill mono">(0,0,1)</span>.
+      Plane is <span class="pill mono">z = 0</span>, tangent at south pole <span class="pill mono">(0,0,0)</span>.
+      Projection point (north pole) is <span class="pill mono">N=(0,0,2)</span>.
+    </div>
+
+    <div class="row">
+      <label>Pick point</label>
+      <div>Hold <code>Shift</code> and drag on the sphere</div>
+    </div>
+
+    <div class="row">
+      <label>α (deg)</label>
+      <input id="alpha" type="range" min="2" max="178" value="120" step="0.1" />
+    </div>
+    <div class="row">
+      <label>β (deg)</label>
+      <input id="beta" type="range" min="-180" max="180" value="30" step="0.1" />
+    </div>
+
+    <div class="row">
+      <label>P on sphere</label>
+      <div class="mono" id="pReadout">(…)</div>
+    </div>
+    <div class="row">
+      <label>proj(P) on plane</label>
+      <div class="mono" id="qReadout">(…)</div>
+    </div>
+
+    <div class="row">
+      <label>formula</label>
+      <div class="mono" style="font-size:12px">
+        q = ( 2x/(2−z), 2y/(2−z), 0 )
+      </div>
+    </div>
+
+    <div class="btns">
+      <button id="traceToggle" aria-pressed="false">Trace: OFF</button>
+      <button id="clearTrace">Clear trace</button>
+      <button id="topView">Top view</button>
+      <button id="resetView">Reset view</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  import * as THREE from "three";
+  import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+  // ---------------------------
+  // Math model
+  // ---------------------------
+  const R = 1;
+  const C = new THREE.Vector3(0, 0, 1);
+  const N = new THREE.Vector3(0, 0, 2);
+  const PLANE_Z = 0;
+
+  function projectToPlane(P) {
+    // Line: N + t(P - N). Want z=0 -> 2 + t(Pz - 2) = 0 -> t = 2/(2 - Pz)
+    const denom = (2 - P.z);
+    if (Math.abs(denom) < 1e-6) return null; // near north pole -> "infinity"
+    const t = 2 / denom;
+    return new THREE.Vector3(t * P.x, t * P.y, PLANE_Z);
+  }
+
+  function clampPointToSphere(P) {
+    const v = P.clone().sub(C);
+    v.setLength(R);
+    return C.clone().add(v);
+  }
+
+  function pointFromAngles(alphaDeg, betaDeg) {
+    const a = THREE.MathUtils.degToRad(alphaDeg);
+    const b = THREE.MathUtils.degToRad(betaDeg);
+    const x = Math.sin(a) * Math.cos(b);
+    const y = Math.sin(a) * Math.sin(b);
+    const z = Math.cos(a);
+    return new THREE.Vector3(C.x + R*x, C.y + R*y, C.z + R*z);
+  }
+
+  function anglesFromPoint(P) {
+    const v = P.clone().sub(C).normalize();
+    const alpha = Math.acos(THREE.MathUtils.clamp(v.z, -1, 1));
+    const beta  = Math.atan2(v.y, v.x);
+    return { alphaDeg: THREE.MathUtils.radToDeg(alpha), betaDeg: THREE.MathUtils.radToDeg(beta) };
+  }
+
+  // ---------------------------
+  // Scene
+  // ---------------------------
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0c10);
+
+  // IMPORTANT: use z as "up" so north pole is visually "above"
+  THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
+
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 200);
+
+  // Default view: plane horizontal, looking slightly from above so you see plane + sphere
+  camera.position.set(5.2, -5.2, 5.8);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  document.getElementById("wrap").appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.target.set(0, 0, 0.6);
+
+  // Lights
+  scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.85);
+  dir.position.set(8, -6, 10);
+  scene.add(dir);
+
+  // Plane z=0 (VISIBLE)
+  // A filled translucent plane + a grid on top for clarity
+  const planeGeo = new THREE.PlaneGeometry(40, 40, 1, 1); // default is XY plane with normal +Z (perfect)
+  const planeMat = new THREE.MeshPhongMaterial({ color: 0x2a2f3a, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+  const plane = new THREE.Mesh(planeGeo, planeMat);
+  plane.position.z = PLANE_Z;
+  scene.add(plane);
+
+  const grid = new THREE.GridHelper(40, 40); // default in XZ at y=0, so rotate to XY at z=0
+  grid.rotation.x = -Math.PI / 2;
+  grid.position.z = PLANE_Z + 0.0005;
+  grid.material.transparent = true;
+  grid.material.opacity = 0.45;
+  scene.add(grid);
+
+  // Axes helper (z is vertical)
+  const axes = new THREE.AxesHelper(3);
+  scene.add(axes);
+
+  // Sphere
+  const sphereGeo = new THREE.SphereGeometry(R, 64, 48);
+  const sphereMat = new THREE.MeshPhongMaterial({ color: 0x7aa7ff, transparent: true, opacity: 0.28, shininess: 60 });
+  const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+  sphere.position.copy(C);
+  scene.add(sphere);
+
+  // Markers
+  const markerGeo = new THREE.SphereGeometry(0.045, 24, 18);
+
+  const northMarker = new THREE.Mesh(markerGeo, new THREE.MeshPhongMaterial({ color: 0xffd27a }));
+  northMarker.position.copy(N);
+  scene.add(northMarker);
+
+  const southMarker = new THREE.Mesh(markerGeo, new THREE.MeshPhongMaterial({ color: 0x7affc7 }));
+  southMarker.position.set(0, 0, 0);
+  scene.add(southMarker);
+
+  const pMarker = new THREE.Mesh(markerGeo, new THREE.MeshPhongMaterial({ color: 0xffffff }));
+  scene.add(pMarker);
+
+  const qMarker = new THREE.Mesh(markerGeo, new THREE.MeshPhongMaterial({ color: 0xff7ad6 }));
+  scene.add(qMarker);
+
+  // Projection line (N to q)
+  const projLine = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([N, new THREE.Vector3(0,0,0)]),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+  );
+  scene.add(projLine);
+
+  // ---------------------------
+  // UI
+  // ---------------------------
+  const alphaEl = document.getElementById("alpha");
+  const betaEl = document.getElementById("beta");
+  const pReadout = document.getElementById("pReadout");
+  const qReadout = document.getElementById("qReadout");
+
+  function fmt(v) {
+    return `(${v.x.toFixed(4)}, ${v.y.toFixed(4)}, ${v.z.toFixed(4)})`;
+  }
+
+  // ---------------------------
+  // Trace on the plane (polyline of projected points)
+  // ---------------------------
+  let traceOn = false;
+  const traceToggle = document.getElementById("traceToggle");
+  const clearTraceBtn = document.getElementById("clearTrace");
+
+  const tracePoints = [];
+  const traceGeom = new THREE.BufferGeometry();
+  traceGeom.setFromPoints([new THREE.Vector3(0,0,PLANE_Z + 0.001)]);
+
+  const traceLine = new THREE.Line(
+    traceGeom,
+    new THREE.LineBasicMaterial({ color: 0xff7ad6, transparent: true, opacity: 0.9 })
+  );
+  scene.add(traceLine);
+
+  function setTrace(on) {
+    traceOn = on;
+    traceToggle.textContent = on ? "Trace: ON" : "Trace: OFF";
+    traceToggle.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+
+  function clearTrace() {
+    tracePoints.length = 0;
+    traceLine.geometry.dispose();
+    traceLine.geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,PLANE_Z + 0.001)]);
+  }
+
+  traceToggle.addEventListener("click", () => setTrace(!traceOn));
+  clearTraceBtn.addEventListener("click", clearTrace);
+
+  function maybeAddToTrace(q) {
+    if (!traceOn) return;
+    const qq = q.clone();
+    qq.z = PLANE_Z + 0.001;
+
+    const last = tracePoints.length ? tracePoints[tracePoints.length - 1] : null;
+    if (last && last.distanceTo(qq) < 0.01) return; // avoid too-dense points
+    tracePoints.push(qq);
+
+    traceLine.geometry.dispose();
+    traceLine.geometry = new THREE.BufferGeometry().setFromPoints(tracePoints);
+  }
+
+  // ---------------------------
+  // Point P selection & update
+  // ---------------------------
+  let P = clampPointToSphere(pointFromAngles(parseFloat(alphaEl.value), parseFloat(betaEl.value)));
+
+  function updatePoint(newP, syncSliders = true, allowTrace = true) {
+    P = clampPointToSphere(newP);
+    const q = projectToPlane(P);
+    if (!q) return;
+
+    pMarker.position.copy(P);
+    qMarker.position.copy(q);
+
+    // Line N -> q
+    projLine.geometry.dispose();
+    projLine.geometry = new THREE.BufferGeometry().setFromPoints([N, q]);
+
+    // Readouts
+    pReadout.textContent = fmt(P);
+    qReadout.textContent = fmt(q);
+
+    if (syncSliders) {
+      const ang = anglesFromPoint(P);
+      alphaEl.value = ang.alphaDeg.toFixed(2);
+      betaEl.value  = ang.betaDeg.toFixed(2);
+    }
+
+    if (allowTrace) maybeAddToTrace(q);
+  }
+
+  alphaEl.addEventListener("input", () => updatePoint(pointFromAngles(+alphaEl.value, +betaEl.value), false, true));
+  betaEl.addEventListener("input",  () => updatePoint(pointFromAngles(+alphaEl.value, +betaEl.value), false, true));
+
+  // ---------------------------
+  // Picking (Shift + drag on sphere)
+  // ---------------------------
+  const raycaster = new THREE.Raycaster();
+  const ndc = new THREE.Vector2();
+  let draggingPoint = false;
+
+  function setNDCFromEvent(ev) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    ndc.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+  }
+
+  function pickOnSphere(ev) {
+    setNDCFromEvent(ev);
+    raycaster.setFromCamera(ndc, camera);
+    const hits = raycaster.intersectObject(sphere, false);
+    if (!hits.length) return null;
+    return hits[0].point;
+  }
+
+  renderer.domElement.addEventListener("pointerdown", (ev) => {
+    if (!ev.shiftKey) return;
+    const hit = pickOnSphere(ev);
+    if (!hit) return;
+    draggingPoint = true;
+    controls.enabled = false;
+    updatePoint(hit, true, true);
+  });
+
+  renderer.domElement.addEventListener("pointermove", (ev) => {
+    if (!draggingPoint) return;
+    const hit = pickOnSphere(ev);
+    if (!hit) return;
+    updatePoint(hit, true, true);
+  });
+
+  window.addEventListener("pointerup", () => {
+    if (!draggingPoint) return;
+    draggingPoint = false;
+    controls.enabled = true;
+  });
+
+  // ---------------------------
+  // View buttons
+  // ---------------------------
+  const camStart = camera.position.clone();
+  const tgtStart = controls.target.clone();
+
+  document.getElementById("topView").addEventListener("click", () => {
+    camera.position.set(0, 0, 10);
+    controls.target.set(0, 0, 0);
+    controls.update();
+  });
+
+  document.getElementById("resetView").addEventListener("click", () => {
+    camera.position.copy(camStart);
+    controls.target.copy(tgtStart);
+    controls.update();
+  });
+
+  // Init
+  updatePoint(P, true, false);
+
+  // Resize
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // Render loop
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+</script>
+</body>
+</html>
